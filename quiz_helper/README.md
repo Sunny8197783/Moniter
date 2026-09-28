@@ -67,6 +67,17 @@ python main.py
 
 작은 **Quiz Study Helper** 창이 열리고, 작업 표시줄 오른쪽 **시스템 트레이**에 파란색 **Q** 아이콘이 나타납니다.
 
+### ⑤ 바탕화면 바로가기 만들기 (선택)
+
+`quiz_helper` 폴더의 **`create_shortcut.bat`을 더블클릭**하면 바탕화면에 **Quiz Study Helper** 아이콘이 생깁니다.
+이후에는 PowerShell 없이 **바탕화면 아이콘을 더블클릭**하면 콘솔 창 없이 바로 실행됩니다.
+
+- ①~② 단계(가상환경 생성, 패키지 설치)를 먼저 마쳐야 합니다. 안 했다면 스크립트가 안내 메시지를 띄웁니다.
+- 전역 단축키를 위해 **관리자 권한으로 실행되는 바로가기**가 필요하면, `quiz_helper` 폴더에서 PowerShell을 열고
+  `.\create_shortcut.bat admin` 을 실행합니다. (실행할 때마다 Windows 확인 창이 뜹니다.)
+- `quiz_helper` 폴더를 다른 곳으로 옮겼다면 바로가기가 끊어지니, 옮긴 위치에서 `create_shortcut.bat`을 다시 실행하세요.
+- "Windows의 PC 보호" 창이 뜨면 **추가 정보 → 실행**을 누르세요. (직접 받은 스크립트라서 뜨는 경고입니다.)
+
 ---
 
 ## 3. 사용법
@@ -122,6 +133,9 @@ python main.py
   PowerShell을 **관리자 권한으로 실행**한 뒤 다시 실행하세요. 관리자 권한으로 실행 중인 프로그램(일부 게임·보안 프로그램) 위에서는
   이 앱도 관리자 권한이어야 단축키가 전달됩니다. 창의 "영역 선택" 버튼은 항상 사용할 수 있습니다.
 - **모니터 배율(125%, 150%)이나 모니터가 여러 대일 때**: 모니터별 배율을 반영해 캡처하므로 그대로 사용하면 됩니다.
+- **바탕화면 아이콘을 눌러도 아무것도 안 떠요**: 바로가기는 콘솔 창 없이 실행되어 오류가 보이지 않습니다.
+  PowerShell에서 `.\.venv\Scripts\Activate.ps1` → `python main.py`로 실행해 오류 메시지를 확인하세요.
+  이미 실행 중이면 트레이의 **Q** 아이콘을 클릭해 보세요.
 - **다른 모델을 쓰고 싶어요**: `.env`에 `GEMINI_MODEL=모델이름`을 추가합니다.
 
 ---
@@ -136,6 +150,9 @@ quiz_helper/
   gemini_client.py   # Gemini 호출, JSON 파싱, 1회 재시도, 오류 분류
   result_card.py     # 우측 하단 결과 카드
   history.py         # 최근 10개 결과를 JSON으로 저장
+  create_shortcut.bat  # 더블클릭 → 바탕화면 바로가기 생성 (create_shortcut.ps1 호출)
+  create_shortcut.ps1
+  icon.ico           # 앱/바로가기 아이콘
   requirements.txt
   .env.example
   README.md

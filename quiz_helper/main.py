@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 import threading
 from html import escape
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QColor, QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
@@ -34,9 +35,12 @@ from selector import RegionSelector
 HOTKEY = "ctrl+shift+q"
 HOTKEY_LABEL = "Ctrl+Shift+Q"
 CAPTURE_DELAY_MS = 200  # 오버레이/창이 화면에서 사라질 때까지 기다리는 시간
+ICON_PATH = Path(__file__).resolve().parent / "icon.ico"  # 바탕화면 바로가기와 같은 아이콘
 
 
 def make_app_icon() -> QIcon:
+    if ICON_PATH.is_file():
+        return QIcon(str(ICON_PATH))
     pix = QPixmap(64, 64)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
