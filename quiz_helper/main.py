@@ -384,7 +384,12 @@ class QuizHelperApp(QObject):
         self.history.add(result)
         self.window.set_history(self.history.items)
         self.card.show_result(result)
-        self.window.set_status(f"✅ 완료: {result.answer}")
+        status = f"✅ 완료: {result.answer}"
+        if self.client is not None:
+            status += f"\n모델: {self.client.model}"
+            if self.client.model_switched_from:
+                status += f" (설정한 '{self.client.model_switched_from}'을 쓸 수 없어 자동 선택)"
+        self.window.set_status(status)
 
     def on_failure(self, error: GeminiError) -> None:
         self._set_busy(False)

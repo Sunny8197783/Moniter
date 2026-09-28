@@ -81,6 +81,10 @@ class ApiServiceError(GeminiError):
     retryable = True
 
 
+class ModelNotFoundError(GeminiError):
+    title = "모델 오류"
+
+
 class RecognitionError(GeminiError):
     title = "문제 인식 실패"
     retryable = True  # 응답 형식이 깨진 경우 한 번 더 시도할 가치가 있다
@@ -134,6 +138,53 @@ def parse_response(text: str | None) -> QuizResult:
     )
 
 
+# ---------------------------------------------------------------- 모델 선택
+# 이미지 문제 풀이에 맞지 않는 특수 용도 모델은 자동 선택에서 제외한다
+_EXCLUDED_MODEL_WORDS = (
+    "image", "tts", "audio", "live", "embedding", "native", "robotics", "computer-use", "8b", "learnlm", "gemma",
+)
+_VERSION_RE = re.compile(r"gemini-(\d+(?:\.\d+)?)")
+
+
+def normalize_model_name(name: str) -> str:
+    """'models/Gemini 2.5 Flash' 같은 입력을 'gemini-2.5-flash' 형태로 정리한다."""
+    name = name.strip().strip("\"'").lower()
+    name = name.removeprefix("models/")
+    name = re.sub(r"(\d),(\d)", r"\1.\2", name)  # 2,5 → 2.5
+    name = re.sub(r"[\s_]+", "-", name)
+    if name and name[0].isdigit():
+        name = "gemini-" + name
+    return name
+
+
+def _model_rank(name: str) -> tuple:
+    """클수록 우선: 안정판 > 미리보기, Flash > Flash-Lite > 기타, 높은 버전 우선."""
+    match = _VERSION_RE.match(name)
+    version = float(match.group(1)) if match else 0.0
+    stable = not any(w in name for w in ("preview", "exp"))
+    is_alias = name.endswith("-latest")
+    if "flash" in name and "lite" not in name:
+        family = 2
+    elif "flash" in name:
+        family = 1
+    else:
+        family = 0
+    return (family, stable, not is_alias, version, name)
+
+
+def choose_model(available: list[str], preferred: str | None = None) -> str | None:
+    """사용 가능한 모델 중 preferred가 있으면 그것을, 없으면 가장 알맞은 모델을 고른다."""
+    if preferred and preferred in available:
+        return preferred
+    candidates = [
+        m for m in available
+        if m.startswith("gemini") and not any(w in m for w in _EXCLUDED_MODEL_WORDS)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=_model_rank)
+
+
 # ---------------------------------------------------------------- 클라이언트
 def load_api_key() -> str:
     """GEMINI_API_KEY를 읽는다. 우선순위: quiz_helper/.env > 현재 폴더 .env > 환경 변수.
@@ -166,8 +217,9 @@ def mask_key(key: str) -> str:
 
 class GeminiClient:
     def __init__(self, api_key: str | None = None, model: str | None = None, client=None):
-        self.model = model or os.getenv("GEMINI_MODEL", "").strip() or DEFAULT_MODEL
+        self.model = normalize_model_name(model or os.getenv("GEMINI_MODEL", "") or DEFAULT_MODEL)
         self.key_hint = ""
+        self.model_switched_from: str | None = None  # 설정한 모델이 없어 자동으로 바꾼 경우 원래 이름
         if client is not None:  # 테스트용 주입
             self._client = client
             return
@@ -182,13 +234,57 @@ class GeminiClient:
         )
 
     def analyze(self, png_bytes: bytes) -> QuizResult:
-        """이미지를 보내 결과를 받는다. 재시도 가능한 오류는 1회 재시도한다."""
+        """이미지를 보내 결과를 받는다.
+
+        - 재시도 가능한 오류는 1회 재시도한다.
+        - 모델을 찾을 수 없으면 이 키로 쓸 수 있는 모델을 조회해 자동으로 바꾼 뒤 다시 시도한다.
+        """
+        try:
+            return self._analyze_with_retry(png_bytes)
+        except ModelNotFoundError:
+            self.switch_to_available_model()
+        return self._analyze_with_retry(png_bytes)
+
+    def _analyze_with_retry(self, png_bytes: bytes) -> QuizResult:
         try:
             return self._analyze_once(png_bytes)
         except GeminiError as exc:
             if not exc.retryable:
                 raise
         return self._analyze_once(png_bytes)
+
+    def list_models(self) -> list[str]:
+        """이 키로 generateContent를 호출할 수 있는 모델 이름 목록."""
+        try:
+            models = list(self._client.models.list(config={"page_size": 1000}))
+        except errors.ClientError as exc:
+            raise _client_error(exc, self.key_hint) from exc
+        except errors.ServerError as exc:
+            raise ApiServiceError(f"Gemini 서버 오류({exc.code})입니다. 잠시 후 다시 시도해 주세요.") from exc
+        except (httpx.TransportError, ConnectionError, TimeoutError) as exc:
+            raise NetworkError("Gemini 서버에 연결할 수 없습니다. 인터넷 연결을 확인해 주세요.") from exc
+        names = []
+        for m in models:
+            actions = getattr(m, "supported_actions", None)
+            if actions and "generateContent" not in actions:
+                continue
+            names.append((m.name or "").removeprefix("models/"))
+        return sorted(n for n in names if n)
+
+    def switch_to_available_model(self) -> str:
+        """현재 모델을 쓸 수 없을 때 사용 가능한 모델로 바꾼다. 바꾼 모델 이름을 반환한다."""
+        available = self.list_models()
+        chosen = choose_model(available, self.model)
+        if chosen is None:
+            sample = ", ".join(available[:8]) or "(없음)"
+            raise ModelNotFoundError(
+                f"'{self.model}' 모델을 쓸 수 없고, 이 API 키로 사용할 수 있는 Gemini 모델도 찾지 못했습니다.\n"
+                f"사용 가능한 모델: {sample}"
+            )
+        if chosen != self.model:
+            self.model_switched_from = self.model
+            self.model = chosen
+        return chosen
 
     def _analyze_once(self, png_bytes: bytes) -> QuizResult:
         try:
@@ -258,6 +354,6 @@ def _client_error(exc: errors.ClientError, key_hint: str = "") -> GeminiError:
         )
         err.retryable = False
         return err
-    if exc.code == 404:
-        return GeminiError("모델을 찾을 수 없습니다. .env의 GEMINI_MODEL 설정을 확인해 주세요." + google_says)
+    if exc.code == 404 or ("model" in lowered and ("not found" in lowered or "not supported" in lowered)):
+        return ModelNotFoundError("모델을 찾을 수 없습니다. .env의 GEMINI_MODEL 설정을 확인해 주세요." + google_says)
     return GeminiError(f"요청이 거부되었습니다({exc.code})." + google_says)

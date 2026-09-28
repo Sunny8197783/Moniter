@@ -11,7 +11,7 @@ from pathlib import Path
 
 from google.genai import errors, types
 
-from gemini_client import APP_DIR, GeminiClient, GeminiError, _client_error, load_api_key, mask_key
+from gemini_client import APP_DIR, GeminiClient, GeminiError, _client_error, choose_model, load_api_key, mask_key
 
 
 def main() -> int:
@@ -41,7 +41,26 @@ def main() -> int:
     print("  → AI Studio에 보이는 키의 앞뒤 글자와 같은지 확인해 주세요.\n")
 
     client = GeminiClient(api_key=key)
-    print(f"* 모델 {client.model} 에 테스트 요청을 보내는 중...")
+    print(f"* 설정된 모델: {client.model}")
+    print("* 이 키로 쓸 수 있는 모델을 조회하는 중...")
+    try:
+        available = client.list_models()
+    except GeminiError as exc:
+        print(f"\n[실패] {exc.title}\n{exc}")
+        return 1
+    flash = [m for m in available if "flash" in m]
+    print(f"  Flash 계열 모델 ({len(flash)}개): {', '.join(flash) or '(없음)'}")
+    chosen = choose_model(available, client.model)
+    if chosen is None:
+        print(f"\n[실패] 사용할 수 있는 Gemini 모델이 없습니다. 전체 목록: {', '.join(available) or '(없음)'}")
+        return 1
+    if chosen != client.model:
+        print(f"\n  ! 설정된 모델 '{client.model}'은(는) 이 키로 쓸 수 없습니다.")
+        print(f"    앱은 자동으로 '{chosen}'을(를) 사용합니다.")
+        print("    .env의 GEMINI_MODEL 줄을 지우거나 아래처럼 고치면 이 안내가 사라집니다:")
+        print(f"    GEMINI_MODEL={chosen}")
+        client.model = chosen
+    print(f"\n* 모델 {client.model} 에 테스트 요청을 보내는 중...")
     try:
         response = client._client.models.generate_content(
             model=client.model,
