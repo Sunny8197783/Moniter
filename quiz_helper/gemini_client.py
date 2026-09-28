@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +20,7 @@ APP_DIR = Path(__file__).resolve().parent
 # 이 모델도 없어지면 아래 GeminiClient가 쓸 수 있는 모델을 자동으로 찾는다.
 DEFAULT_MODEL = "gemini-3.8-flash"
 MAX_MODEL_SWITCHES = 3
+BUSY_RETRY_DELAYS = (2, 4)  # 서버 혼잡(503 등) 시 재시도 전 대기 시간(초)
 REQUEST_TIMEOUT_MS = 60_000
 
 SYSTEM_PROMPT = (
@@ -82,6 +85,12 @@ class NetworkError(GeminiError):
 class ApiServiceError(GeminiError):
     title = "API 오류"
     retryable = True
+
+
+class ServerBusyError(ApiServiceError):
+    """503 등 Google 서버 쪽 일시 오류. 간격을 두고 재시도하고, 안 되면 다른 모델로 우회한다."""
+
+    title = "서버 혼잡"
 
 
 class ModelNotFoundError(GeminiError):
@@ -234,6 +243,8 @@ class GeminiClient:
         self.key_hint = ""
         self.model_switched_from: str | None = None  # 설정한 모델이 없어 자동으로 바꾼 경우 원래 이름
         self._unavailable: set[str] = set()  # 404가 난 모델 (목록에는 있어도 쓸 수 없는 모델 포함)
+        self.last_model_used: str | None = None  # 마지막으로 응답한 모델 (혼잡 우회 시 원래 모델과 다를 수 있음)
+        self._sleep = time.sleep  # 테스트에서 대기 없이 돌릴 수 있도록 분리
         if client is not None:  # 테스트용 주입
             self._client = client
             return
@@ -247,26 +258,71 @@ class GeminiClient:
             ),
         )
 
-    def analyze(self, png_bytes: bytes) -> QuizResult:
+    def analyze(self, png_bytes: bytes, progress: Callable[[str], None] | None = None) -> QuizResult:
         """이미지를 보내 결과를 받는다.
 
-        - 재시도 가능한 오류는 1회 재시도한다.
+        - 네트워크 오류·응답 형식 오류는 1회 재시도한다.
+        - 서버 혼잡(503 등)은 간격을 두고 재시도하고, 계속되면 다른 모델로 한 번 우회한다.
         - 모델을 찾을 수 없으면 이 키로 쓸 수 있는 모델을 조회해 자동으로 바꾼 뒤 다시 시도한다.
+        progress가 주어지면 재시도 상황을 사용자에게 보여 줄 문구로 알려 준다.
         """
+        progress = progress or (lambda _msg: None)
         for _ in range(MAX_MODEL_SWITCHES):
             try:
-                return self._analyze_with_retry(png_bytes)
+                return self._analyze_or_fallback(png_bytes, progress)
             except ModelNotFoundError as exc:
+                progress("모델을 바꿔 다시 시도하는 중...")
                 self.switch_to_available_model(exc.recommended)
-        return self._analyze_with_retry(png_bytes)
+        return self._analyze_or_fallback(png_bytes, progress)
 
-    def _analyze_with_retry(self, png_bytes: bytes) -> QuizResult:
+    def _analyze_or_fallback(self, png_bytes: bytes, progress: Callable[[str], None]) -> QuizResult:
         try:
-            return self._analyze_once(png_bytes)
-        except GeminiError as exc:
-            if not exc.retryable:
+            return self._analyze_with_retry(png_bytes, progress)
+        except ServerBusyError as busy:
+            fallback = self._busy_fallback_model()
+            if fallback is None:
                 raise
-        return self._analyze_once(png_bytes)
+            progress(f"'{self.model}' 서버가 혼잡해 '{fallback}' 모델로 시도하는 중...")
+            primary, self.model = self.model, fallback
+            try:
+                return self._analyze_with_retry(png_bytes, progress, busy_retries=0)
+            except (ServerBusyError, ModelNotFoundError) as exc:
+                if isinstance(exc, ModelNotFoundError):
+                    self._unavailable.add(fallback)  # 원래 모델이 아니라 우회 모델을 사용 불가로 기록
+                raise busy from None
+            finally:
+                self.model = primary  # 혼잡은 일시적이므로 다음 요청은 원래 모델부터 시도
+
+    def _busy_fallback_model(self) -> str | None:
+        """서버 혼잡 시 우회할 모델. 목록을 가져올 수 없으면 None."""
+        try:
+            available = self.list_models()
+        except GeminiError:
+            return None
+        candidates = [m for m in available if m != self.model and m not in self._unavailable]
+        return choose_model(candidates)
+
+    def _analyze_with_retry(
+        self, png_bytes: bytes, progress: Callable[[str], None], busy_retries: int | None = None
+    ) -> QuizResult:
+        delays = BUSY_RETRY_DELAYS if busy_retries is None else BUSY_RETRY_DELAYS[:busy_retries]
+        busy_attempt = 0
+        retried_other = False
+        while True:
+            try:
+                return self._analyze_once(png_bytes)
+            except ServerBusyError:
+                if busy_attempt >= len(delays):
+                    raise
+                delay = delays[busy_attempt]
+                busy_attempt += 1
+                progress(f"Gemini 서버가 혼잡합니다. {delay}초 후 다시 시도합니다 ({busy_attempt}/{len(delays)})")
+                self._sleep(delay)
+            except GeminiError as exc:
+                if not exc.retryable or retried_other:
+                    raise
+                retried_other = True
+                progress("다시 시도하는 중...")
 
     def list_models(self) -> list[str]:
         """이 키로 generateContent를 호출할 수 있는 모델 이름 목록."""
@@ -326,10 +382,16 @@ class GeminiClient:
         except errors.ClientError as exc:
             raise _client_error(exc, self.key_hint) from exc
         except errors.ServerError as exc:
-            raise ApiServiceError(f"Gemini 서버 오류({exc.code})입니다. 잠시 후 다시 시도해 주세요.") from exc
+            raise ServerBusyError(
+                f"Gemini 서버가 혼잡하거나 일시적인 오류가 났습니다({exc.code}).\n"
+                "여러 번 다시 시도했지만 응답이 없었습니다. 1~2분 뒤 다시 시도해 주세요.\n"
+                "(Google 쪽 문제로, 앱이나 API 키 문제는 아닙니다.)"
+                f"\n\nGoogle 응답: {(getattr(exc, 'message', '') or str(exc))[:150]}"
+            ) from exc
         except (httpx.TransportError, ConnectionError, TimeoutError) as exc:
             raise NetworkError("Gemini 서버에 연결할 수 없습니다. 인터넷 연결을 확인해 주세요.") from exc
 
+        self.last_model_used = self.model
         return parse_response(getattr(response, "text", None))
 
 

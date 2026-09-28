@@ -83,6 +83,10 @@ def main() -> int:
             except GeminiError as switch_err:
                 print(f"\n[실패] {switch_err.title}\n{switch_err}")
                 return 1
+        except errors.ServerError as exc:
+            print(f"\n[서버 혼잡] 키와 모델 설정은 정상입니다. Google 서버가 일시적으로 혼잡합니다({exc.code}).")
+            print("1~2분 뒤 다시 시도해 주세요. 앱은 이런 경우 자동으로 여러 번 재시도하고 다른 모델로도 우회합니다.")
+            return 1
         except Exception as exc:
             print(f"\n[실패] {exc.__class__.__name__}: {exc}")
             return 1

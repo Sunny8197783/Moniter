@@ -90,13 +90,14 @@ class AnalyzeWorker(QObject):
 
     succeeded = pyqtSignal(object)  # QuizResult
     failed = pyqtSignal(object)  # GeminiError
+    progress = pyqtSignal(str)  # 재시도 중 안내 문구
 
     def run(self, client: GeminiClient, png: bytes) -> None:
         threading.Thread(target=self._work, args=(client, png), daemon=True).start()
 
     def _work(self, client: GeminiClient, png: bytes) -> None:
         try:
-            result = client.analyze(png)
+            result = client.analyze(png, progress=self.progress.emit)
         except GeminiError as exc:
             self.failed.emit(exc)
         except Exception as exc:  # 예상 못한 오류도 카드에 표시
@@ -291,6 +292,7 @@ class QuizHelperApp(QObject):
         self.selector.cancelled.connect(self.on_selection_cancelled)
         self.worker.succeeded.connect(self.on_success)
         self.worker.failed.connect(self.on_failure)
+        self.worker.progress.connect(self.on_progress)
 
         self.hotkeys.triggered.connect(self.start_selection)
         self.window.set_hotkey_status(self.hotkeys.register())
@@ -386,10 +388,18 @@ class QuizHelperApp(QObject):
         self.card.show_result(result)
         status = f"✅ 완료: {result.answer}"
         if self.client is not None:
-            status += f"\n모델: {self.client.model}"
-            if self.client.model_switched_from:
+            used = self.client.last_model_used or self.client.model
+            status += f"\n모델: {used}"
+            if used != self.client.model:
+                status += f" ('{self.client.model}' 서버 혼잡으로 우회)"
+            elif self.client.model_switched_from:
                 status += f" (설정한 '{self.client.model_switched_from}'을 쓸 수 없어 자동 선택)"
         self.window.set_status(status)
+
+    def on_progress(self, message: str) -> None:
+        if self.busy:
+            self.card.show_loading(message)
+            self.window.set_status(f"⏳ {message}")
 
     def on_failure(self, error: GeminiError) -> None:
         self._set_busy(False)

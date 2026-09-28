@@ -75,9 +75,11 @@ class ResultCard(QWidget):
         layout.addLayout(self._body)
 
     # ---------------------------------------------------------- 상태 표시
-    def show_loading(self) -> None:
+    def show_loading(self, detail: str = "") -> None:
         self._reset()
         self._add_label("⏳ 문제를 분석하고 있습니다...")
+        if detail:
+            self._add_label(escape(detail), "muted")
         self._present()
 
     def show_result(self, result: QuizResult) -> None:
