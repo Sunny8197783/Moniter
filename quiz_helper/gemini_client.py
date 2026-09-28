@@ -14,7 +14,10 @@ from google import genai
 from google.genai import errors, types
 
 APP_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = "gemini-2.5-flash"
+# gemini-2.5-flash는 신규 사용자에게 제공이 중단되어 Google이 권장하는 모델로 바꿨다.
+# 이 모델도 없어지면 아래 GeminiClient가 쓸 수 있는 모델을 자동으로 찾는다.
+DEFAULT_MODEL = "gemini-3.8-flash"
+MAX_MODEL_SWITCHES = 3
 REQUEST_TIMEOUT_MS = 60_000
 
 SYSTEM_PROMPT = (
@@ -83,6 +86,16 @@ class ApiServiceError(GeminiError):
 
 class ModelNotFoundError(GeminiError):
     title = "모델 오류"
+    recommended: str | None = None  # Google 응답이 권장한 대체 모델
+
+
+_RECOMMENDED_RE = re.compile(r"use\s+(?:models/)?(gemini[\w.\-]*\w)", re.IGNORECASE)
+
+
+def recommended_model(message: str) -> str | None:
+    """'... Please update your code to use models/gemini-3.8-flash ...'에서 권장 모델 이름을 뽑는다."""
+    match = _RECOMMENDED_RE.search(message or "")
+    return match.group(1).lower() if match else None
 
 
 class RecognitionError(GeminiError):
@@ -220,6 +233,7 @@ class GeminiClient:
         self.model = normalize_model_name(model or os.getenv("GEMINI_MODEL", "") or DEFAULT_MODEL)
         self.key_hint = ""
         self.model_switched_from: str | None = None  # 설정한 모델이 없어 자동으로 바꾼 경우 원래 이름
+        self._unavailable: set[str] = set()  # 404가 난 모델 (목록에는 있어도 쓸 수 없는 모델 포함)
         if client is not None:  # 테스트용 주입
             self._client = client
             return
@@ -239,10 +253,11 @@ class GeminiClient:
         - 재시도 가능한 오류는 1회 재시도한다.
         - 모델을 찾을 수 없으면 이 키로 쓸 수 있는 모델을 조회해 자동으로 바꾼 뒤 다시 시도한다.
         """
-        try:
-            return self._analyze_with_retry(png_bytes)
-        except ModelNotFoundError:
-            self.switch_to_available_model()
+        for _ in range(MAX_MODEL_SWITCHES):
+            try:
+                return self._analyze_with_retry(png_bytes)
+            except ModelNotFoundError as exc:
+                self.switch_to_available_model(exc.recommended)
         return self._analyze_with_retry(png_bytes)
 
     def _analyze_with_retry(self, png_bytes: bytes) -> QuizResult:
@@ -271,19 +286,27 @@ class GeminiClient:
             names.append((m.name or "").removeprefix("models/"))
         return sorted(n for n in names if n)
 
-    def switch_to_available_model(self) -> str:
-        """현재 모델을 쓸 수 없을 때 사용 가능한 모델로 바꾼다. 바꾼 모델 이름을 반환한다."""
-        available = self.list_models()
-        chosen = choose_model(available, self.model)
+    def switch_to_available_model(self, recommended: str | None = None) -> str:
+        """현재 모델을 쓸 수 없을 때 다른 모델로 바꾼다. 바꾼 모델 이름을 반환한다.
+
+        Google이 권장한 모델이 있으면 그것을, 없으면 목록에서 가장 알맞은 모델을 고른다.
+        이미 실패한 모델은 목록에 있어도 다시 고르지 않는다.
+        """
+        self._unavailable.add(self.model)
+        available = [m for m in self.list_models() if m not in self._unavailable]
+        if recommended and recommended in available:
+            chosen = recommended
+        else:
+            chosen = choose_model(available)
         if chosen is None:
             sample = ", ".join(available[:8]) or "(없음)"
             raise ModelNotFoundError(
                 f"'{self.model}' 모델을 쓸 수 없고, 이 API 키로 사용할 수 있는 Gemini 모델도 찾지 못했습니다.\n"
                 f"사용 가능한 모델: {sample}"
             )
-        if chosen != self.model:
+        if self.model_switched_from is None:
             self.model_switched_from = self.model
-            self.model = chosen
+        self.model = chosen
         return chosen
 
     def _analyze_once(self, png_bytes: bytes) -> QuizResult:
@@ -297,7 +320,6 @@ class GeminiClient:
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
                     response_mime_type="application/json",
-                    temperature=0.2,
                     automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
                 ),
             )
@@ -355,5 +377,7 @@ def _client_error(exc: errors.ClientError, key_hint: str = "") -> GeminiError:
         err.retryable = False
         return err
     if exc.code == 404 or ("model" in lowered and ("not found" in lowered or "not supported" in lowered)):
-        return ModelNotFoundError("모델을 찾을 수 없습니다. .env의 GEMINI_MODEL 설정을 확인해 주세요." + google_says)
+        err = ModelNotFoundError("모델을 쓸 수 없습니다. .env의 GEMINI_MODEL 설정을 확인해 주세요." + google_says)
+        err.recommended = recommended_model(getattr(exc, "message", "") or str(exc))
+        return err
     return GeminiError(f"요청이 거부되었습니다({exc.code})." + google_says)
