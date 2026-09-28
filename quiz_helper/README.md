@@ -121,13 +121,38 @@ python main.py
 | 카드 메시지 | 원인 / 해결 |
 | --- | --- |
 | **API 키 없음** | `.env` 파일이 없거나 `GEMINI_API_KEY`가 비어 있음 → 2-③ 단계 확인 |
-| **API 키 오류** | 키가 잘못됨 → AI Studio에서 키를 다시 복사 |
+| **API 키 오류** | 카드에 Google이 보낸 거부 사유와 앱이 읽은 키의 앞뒤 4자리가 함께 표시됩니다 → 아래 "API 키 오류가 계속 날 때" 참고 |
 | **네트워크 오류** | 인터넷 연결 끊김/시간 초과 (자동으로 1회 재시도 후 표시) |
 | **API 오류** | Gemini 서버 오류 또는 요청 한도 초과 → 잠시 후 다시 시도 |
 | **문제 인식 실패** | 선택 영역에 객관식 문제가 없거나 글자가 너무 작음 → 문제와 보기를 모두 포함해 더 크게 선택 |
 | **캡처 실패** | 선택 영역이 너무 작음 → 다시 드래그 |
 
 ## 5. 문제 해결
+
+### API 키 오류가 계속 날 때
+
+`quiz_helper` 폴더의 PowerShell에서 키 점검 도구를 실행하세요.
+
+```powershell
+.\.venv\Scripts\python.exe check_key.py
+```
+
+`.env`를 어디서 읽었는지, 어떤 키를 읽었는지(앞뒤 4자리), 실제 호출이 되는지와 실패 이유를 알려 줍니다.
+
+| 점검 결과 | 해결 |
+| --- | --- |
+| 키 값이 올바르지 않음 (`API key not valid`) | 키가 잘렸거나 다른 값이 들어간 경우입니다. [AI Studio](https://aistudio.google.com/apikey)에서 **복사 버튼**으로 키 전체를 다시 복사해 `GEMINI_API_KEY=` 뒤에 붙여 넣으세요. |
+| 읽은 키의 앞뒤 글자가 AI Studio와 다름 | 다른 `.env` 파일을 고친 경우입니다. 점검 결과에 표시된 경로의 `.env`를 수정하세요. |
+| `.env` 파일이 없음 / `.env.txt`가 있음 | 메모장이 `.env.txt`로 저장한 경우입니다. 탐색기 **보기 → 파일 확장명**을 켜고 이름을 `.env`로 바꾸세요. |
+| 유출된 키로 차단됨 (`leaked`) | 키가 GitHub 등에 공개되어 Google이 막은 경우입니다. 새 키를 발급하세요. |
+| Gemini API가 꺼져 있음 / 사용 제한 | Google Cloud Console에서 만든 키일 때 흔합니다. **AI Studio에서 새 키를 만드는 것**이 가장 간단합니다. |
+| 요청 한도 초과 (429) | 무료 등급의 분당·일일 한도입니다. 잠시 후 다시 시도하세요. |
+
+`.env`는 이런 형태여야 합니다(따옴표·공백 없이 한 줄).
+
+```
+GEMINI_API_KEY=AIzaSy...키 전체...
+```
 
 - **`Ctrl+Shift+Q`가 안 먹어요**: 컨트롤 창 하단에 "전역 단축키 등록 실패"가 보이면
   PowerShell을 **관리자 권한으로 실행**한 뒤 다시 실행하세요. 관리자 권한으로 실행 중인 프로그램(일부 게임·보안 프로그램) 위에서는
@@ -148,6 +173,7 @@ quiz_helper/
   selector.py        # 반투명 오버레이 + 드래그 영역 선택 (모니터별, DPI 배율 반영)
   capture.py         # mss 화면 캡처, PNG 변환
   gemini_client.py   # Gemini 호출, JSON 파싱, 1회 재시도, 오류 분류
+  check_key.py       # API 키 점검 도구
   result_card.py     # 우측 하단 결과 카드
   history.py         # 최근 10개 결과를 JSON으로 저장
   create_shortcut.bat  # 더블클릭 → 바탕화면 바로가기 생성 (create_shortcut.ps1 호출)
