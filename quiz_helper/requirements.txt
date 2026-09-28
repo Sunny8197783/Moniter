@@ -5,3 +5,4 @@ google-genai>=1.0
 keyboard>=0.13.5
 python-dotenv>=1.0
 httpx>=0.27
+pynput>=1.7.6

@@ -41,7 +41,9 @@ class ResultCard(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus  # 보던 창(브라우저 등)의 포커스를 빼앗지 않는다
         )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(STYLE)
         self.setFixedWidth(CARD_WIDTH)
@@ -82,8 +84,10 @@ class ResultCard(QWidget):
             self._add_label(escape(detail), "muted")
         self._present()
 
-    def show_result(self, result: QuizResult) -> None:
+    def show_result(self, result: QuizResult, note: str = "") -> None:
         self._reset()
+        if note:
+            self._add_label(escape(note), "muted")
         if result.needs_check:
             self._add_label("⚠ 신뢰도 낮음 — 직접 확인 필요", "warning")
 
