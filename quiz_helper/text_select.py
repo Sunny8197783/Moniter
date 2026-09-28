@@ -21,7 +21,7 @@ MIN_DRAG_PX = 12  # 이보다 짧게 움직이면 클릭으로 본다
 SETTLE_MS = 120  # 마우스를 놓은 뒤 선택이 확정될 때까지 기다리는 시간
 COPY_TIMEOUT_MS = 700  # Ctrl+C 후 클립보드가 바뀌기를 기다리는 최대 시간
 POLL_MS = 20
-MIN_TEXT_LEN = 8
+MIN_TEXT_LEN = 4  # '2+2=?' 같은 짧은 문제도 받는다
 MAX_TEXT_LEN = 5000
 
 # Ctrl+C가 복사가 아닌 다른 동작(중지 신호, 파일 복사, 원격 전송 등)을 하는 프로그램은 건너뛴다
@@ -46,6 +46,7 @@ _MARKER_RES = (
     re.compile(r"(?:^|\s)\(?([A-Ea-e])\s*[).]"),  # A. a) (A)
     re.compile(r"(?:^|\s)\(?([가나다라마ㄱㄴㄷㄹㅁ])\s*[).]"),  # 가. ㄱ) (가)
 )
+_URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)  # 주소 속 '?'는 물음표로 치지 않는다
 _QUESTION_WORDS_RE = re.compile(
     r"고르(시오|세요|면)|고른 것은|옳은 것은|옳지 않은 것은|알맞은 것은|적절한 것은|적절하지 않은 것은|"
     r"해당하는 것은|아닌 것은|which of the following|choose the|select the (best|correct)",
@@ -59,10 +60,12 @@ def normalize_text(text: str) -> str:
 
 
 def looks_like_multiple_choice(text: str) -> bool:
-    """보기 번호가 두 개 이상 있거나 '고르시오' 같은 문제 표현이 있으면 객관식으로 본다."""
+    """문제로 보이면 True: 물음표가 있거나, 보기 번호가 두 개 이상 있거나, '고르시오' 같은 표현이 있을 때."""
     text = text.strip()
     if not (MIN_TEXT_LEN <= len(text) <= MAX_TEXT_LEN):
         return False
+    if re.search(r"[?？]", _URL_RE.sub(" ", text)):
+        return True
     if len(set(_CIRCLED_RE.findall(text))) >= 2:
         return True
     if any(len(set(pattern.findall(text))) >= 2 for pattern in _MARKER_RES):
@@ -291,7 +294,7 @@ class DragTextWatcher(QObject):
         if looks_like_multiple_choice(text):
             self.text_selected.emit(text.strip())
         elif len(text.strip()) >= MIN_TEXT_LEN:
-            self.skipped.emit("선택한 텍스트가 객관식 문제로 보이지 않아 건너뛰었습니다 (문제와 보기를 함께 선택해 주세요).")
+            self.skipped.emit("선택한 텍스트가 문제로 보이지 않아 건너뛰었습니다 (물음표(?)나 보기 번호가 있는 문제만 풉니다).")
 
     def _restore_clipboard(self, backup: QMimeData) -> None:
         self._ignore_clipboard_until = time.monotonic() + 0.1
